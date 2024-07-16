@@ -1,0 +1,165 @@
+#Version Tkinter
+
+#Por David Ruiz
+#Puedes usar mi script siempre y cuando me des créditos en mis redes sociales @viajatech
+#Se agredecido y dale estrella a este repositorio, gracias! 
+
+
+
+
+# pip install opencv-python numpy pillow
+
+
+import cv2
+import numpy as np
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from PIL import Image, ImageTk
+import threading
+
+class VideoLogoRemover:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Video Logo Remover by Viaja Tech")
+        
+        self.video_path = None
+        self.logo_coords = None
+        self.frame = None
+        
+        self.setup_ui()
+        
+    def setup_ui(self):
+        self.select_button = tk.Button(self.root, text="Seleccionar Video", command=self.select_video)
+        self.select_button.pack(pady=10)
+        
+        self.canvas = tk.Canvas(self.root, width=640, height=480)
+        self.canvas.pack()
+        
+        self.process_button = tk.Button(self.root, text="Procesar Video", command=self.start_processing, state=tk.DISABLED)
+        self.process_button.pack(pady=10)
+        
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = tk.Scale(self.root, variable=self.progress_var, from_=0, to=100, orient=tk.HORIZONTAL, length=300, state=tk.DISABLED)
+        self.progress_bar.pack(pady=10)
+        
+        self.status_label = tk.Label(self.root, text="")
+        self.status_label.pack(pady=5)
+        
+    def select_video(self):
+        self.video_path = filedialog.askopenfilename(filetypes=[("Video files", "*.mp4;*.avi")])
+        if self.video_path:
+            self.load_first_frame()
+            
+    def load_first_frame(self):
+        try:
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                raise Exception("No se pudo abrir el video")
+            
+            ret, self.frame = cap.read()
+            if not ret or self.frame is None:
+                raise Exception("No se pudo leer el primer frame del video")
+            
+            self.frame = cv2.cvtColor(self.frame, cv2.COLOR_BGR2RGB)
+            self.frame = cv2.resize(self.frame, (640, 480))
+            self.photo = ImageTk.PhotoImage(image=Image.fromarray(self.frame))
+            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.photo)
+            self.canvas.bind("<ButtonPress-1>", self.start_selection)
+            self.canvas.bind("<B1-Motion>", self.update_selection)
+            self.canvas.bind("<ButtonRelease-1>", self.end_selection)
+            self.status_label.config(text="Video cargado. Seleccione el área del logo.")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo cargar el video: {str(e)}")
+        finally:
+            if cap is not None:
+                cap.release()
+        
+    def start_selection(self, event):
+        self.start_x = self.canvas.canvasx(event.x)
+        self.start_y = self.canvas.canvasy(event.y)
+        self.selection_rect = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline='red')
+        
+    def update_selection(self, event):
+        cur_x = self.canvas.canvasx(event.x)
+        cur_y = self.canvas.canvasy(event.y)
+        self.canvas.coords(self.selection_rect, self.start_x, self.start_y, cur_x, cur_y)
+        
+    def end_selection(self, event):
+        end_x = self.canvas.canvasx(event.x)
+        end_y = self.canvas.canvasy(event.y)
+        self.logo_coords = (int(min(self.start_x, end_x)), int(min(self.start_y, end_y)), 
+                            int(max(self.start_x, end_x)), int(max(self.start_y, end_y)))
+        self.process_button.config(state=tk.NORMAL)
+        self.status_label.config(text="Área seleccionada. Puede procesar el video.")
+        
+    def start_processing(self):
+        threading.Thread(target=self.process_video, daemon=True).start()
+        
+    def process_video(self):
+        if not self.video_path or not self.logo_coords:
+            messagebox.showerror("Error", "Por favor, seleccione un video y el área del logo primero.")
+            return
+        
+        try:
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                raise Exception("No se pudo abrir el video para procesamiento")
+            
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            
+            output_path = filedialog.asksaveasfilename(defaultextension=".mp4", filetypes=[("MP4 files", "*.mp4")])
+            if not output_path:
+                return
+            
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            
+            x1, y1, x2, y2 = self.logo_coords
+            # Ajustar las coordenadas al tamaño original del video
+            x1 = int(x1 * width / 640)
+            y1 = int(y1 * height / 480)
+            x2 = int(x2 * width / 640)
+            y2 = int(y2 * height / 480)
+            
+            # Crear una máscara más grande para un mejor efecto de inpainting
+            expand = 10  # Expandir la máscara 10 píxeles en cada dirección
+            mask = np.zeros((height, width), dtype=np.uint8)
+            cv2.rectangle(mask, (max(0, x1-expand), max(0, y1-expand)), 
+                          (min(width, x2+expand), min(height, y2+expand)), 255, -1)
+            
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            for i in range(total_frames):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Aplicar inpainting
+                frame_inpainted = cv2.inpaint(frame, mask, 3, cv2.INPAINT_TELEA)
+                
+                out.write(frame_inpainted)
+                
+                progress = (i + 1) / total_frames * 100
+                self.progress_var.set(progress)
+                self.status_label.config(text=f"Procesando: {i+1}/{total_frames} frames")
+                self.root.update_idletasks()
+            
+            messagebox.showinfo("Proceso Completado", f"El video ha sido procesado y guardado en: {output_path}")
+            self.status_label.config(text="Procesamiento completado.")
+        except cv2.error as e:
+            messagebox.showerror("Error de OpenCV", f"Error en OpenCV: {str(e)}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Ocurrió un error durante el procesamiento: {str(e)}")
+        finally:
+            if cap is not None:
+                cap.release()
+            if out is not None:
+                out.release()
+            self.progress_var.set(0)
+            self.process_button.config(state=tk.NORMAL)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = VideoLogoRemover(root)
+    root.mainloop()
